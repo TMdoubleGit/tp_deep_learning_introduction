@@ -8,6 +8,7 @@ import string
 import re
 import numpy as np
 
+import tensorflow as tf
 import tensorflow.data as tf_data
 import tensorflow.strings as tf_strings
 
@@ -15,16 +16,7 @@ import keras
 from keras import layers
 from keras import ops
 from keras.layers import TextVectorization
-from tensorflow import keras
 import pathlib
-
-# text_file = keras.utils.get_file(
-#     fname="spa-eng.zip",
-#     origin="http://storage.googleapis.com/download.tensorflow.org/data/spa-eng.zip",
-#     extract=True,
-# )
-# text_file = pathlib.Path(text_file).parent / "spa-eng" / "spa.txt"
-
 
 zip_path = keras.utils.get_file(
     fname="spa-eng.zip",
@@ -32,12 +24,12 @@ zip_path = keras.utils.get_file(
     extract=True,
 )
 
-base = pathlib.Path(zip_path).parent  # ~/.keras/datasets
+base = pathlib.Path(zip_path).parent
 candidates = list(base.rglob("spa.txt"))
 print("zip_path:", zip_path)
 print("found:", candidates)
 
-text_file = candidates[0]  # si la liste n'est pas vide
+text_file = candidates[0]
 with open(text_file, "r", encoding="utf-8") as f:
     print(f.readline())
 
@@ -261,17 +253,17 @@ class TransformerDecoder(layers.Layer):
         return self.layernorm_3(out_2 + proj_output)
 
     def get_causal_attention_mask(self, inputs):
-        input_shape = ops.shape(inputs)
-        batch_size, sequence_length = input_shape[0], input_shape[1]
-        i = ops.arange(sequence_length)[:, None]
-        j = ops.arange(sequence_length)
-        mask = ops.cast(i >= j, dtype="int32")
-        mask = ops.reshape(mask, (1, input_shape[1], input_shape[1]))
-        mult = ops.concatenate(
-            [ops.expand_dims(batch_size, -1), ops.convert_to_tensor([1, 1])],
-            axis=0,
-        )
-        return ops.tile(mask, mult)
+        input_shape = tf.shape(inputs)
+        batch_size = input_shape[0]
+        seq_len = input_shape[1]
+
+        i = tf.range(seq_len)[:, None]
+        j = tf.range(seq_len)[None, :]
+        mask = tf.cast(i >= j, dtype=tf.int32)
+        mask = tf.reshape(mask, (1, seq_len, seq_len))
+
+        multiples = tf.stack([batch_size, 1, 1])
+        return tf.tile(mask, multiples)
 
     def get_config(self):
         config = super().get_config()
@@ -284,22 +276,19 @@ class TransformerDecoder(layers.Layer):
         )
         return config
     
-embed_dim = 256
-latent_dim = 2048
-num_heads = 8
+embed_dim = 128 #256
+latent_dim = 512 #2048
+num_heads = 4 #8
 
 encoder_inputs = keras.Input(shape=(None,), dtype="int64", name="encoder_inputs")
-x = PositionalEmbedding(sequence_length, vocab_size, embed_dim)(encoder_inputs)
-encoder_outputs = TransformerEncoder(embed_dim, latent_dim, num_heads)(x)
-encoder = keras.Model(encoder_inputs, encoder_outputs)
+x_enc = PositionalEmbedding(sequence_length, vocab_size, embed_dim)(encoder_inputs)
+encoder_outputs = TransformerEncoder(embed_dim, latent_dim, num_heads)(x_enc)
 
 decoder_inputs = keras.Input(shape=(None,), dtype="int64", name="decoder_inputs")
-encoded_seq_inputs = keras.Input(shape=(None, embed_dim), name="decoder_state_inputs")
-x = PositionalEmbedding(sequence_length, vocab_size, embed_dim)(decoder_inputs)
-x = TransformerDecoder(embed_dim, latent_dim, num_heads)([x, encoder_outputs])
-x = layers.Dropout(0.5)(x)
-decoder_outputs = layers.Dense(vocab_size, activation="softmax")(x)
-decoder = keras.Model([decoder_inputs, encoded_seq_inputs], decoder_outputs)
+x_dec = PositionalEmbedding(sequence_length, vocab_size, embed_dim)(decoder_inputs)
+x_dec = TransformerDecoder(embed_dim, latent_dim, num_heads)([x_dec, encoder_outputs])
+x_dec = layers.Dropout(0.5)(x_dec)
+decoder_outputs = layers.Dense(vocab_size, activation="softmax")(x_dec)
 
 transformer = keras.Model(
     {"encoder_inputs": encoder_inputs, "decoder_inputs": decoder_inputs},
@@ -307,7 +296,7 @@ transformer = keras.Model(
     name="transformer",
 )
 
-epochs = 5  # This should be at least 30 for convergence
+epochs = 30
 
 transformer.summary()
 transformer.compile(
@@ -335,7 +324,6 @@ def decode_sequence(input_sentence):
             }
         )
 
-        # ops.argmax(predictions[0, i, :]) is not a concrete value for jax here
         sampled_token_index = ops.convert_to_numpy(
             ops.argmax(predictions[0, i, :])
         ).item(0)
